@@ -70,6 +70,15 @@ This project enables AI agents to send image generation requests to ComfyUI usin
   })
   ```
 
+### Workflow-backed MCP tools
+
+- Any workflow JSON placed in `workflows/` that contains placeholders such as `PARAM_PROMPT`, `PARAM_TAGS`, or `PARAM_LYRICS` is exposed automatically as an MCP tool.
+- Placeholders live inside node inputs and follow the convention `PARAM_<TYPE?>_<NAME>` where `<TYPE?>` is optional. Supported type hints: `STR`, `STRING`, `TEXT`, `INT`, `FLOAT`, and `BOOL`.
+- Example: `"tags": "PARAM_TAGS"` creates a `tags: str` argument, while `"steps": "PARAM_INT_STEPS"` becomes an `int` argument.
+- The tool name defaults to the workflow filename (normalized to snake_case). Rename the JSON file if you want a friendlier MCP tool name.
+- Outputs are inferred heuristically: workflows that contain audio nodes return audio URLs, otherwise image URLs are returned.
+- Add more workflows and they will show up without extra Python changes, provided they use the placeholder convention above.
+
 ## Project Structure
 
 - `server.py`: MCP server with WebSocket transport and lifecycle support.

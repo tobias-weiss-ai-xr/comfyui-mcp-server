@@ -2,7 +2,7 @@ import requests
 import json
 import time
 import logging
-from typing import Any, Dict, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ComfyUIClient")
@@ -55,11 +55,65 @@ class ComfyUIClient:
         prompt_id = self._queue_workflow(workflow)
         outputs = self._wait_for_prompt(prompt_id, max_attempts=max_attempts)
         asset_url = self._extract_first_asset_url(outputs, preferred_output_keys)
+        
+        # Extract asset metadata
+        asset_metadata = self._get_asset_metadata(asset_url, outputs, preferred_output_keys)
+        
         return {
             "asset_url": asset_url,
             "prompt_id": prompt_id,
-            "raw_outputs": outputs
+            "raw_outputs": outputs,
+            "asset_metadata": asset_metadata
         }
+    
+    def _get_asset_metadata(self, asset_url: str, outputs: Dict[str, Any], preferred_output_keys: Sequence[str]) -> Dict[str, Any]:
+        """Extract metadata about the generated asset"""
+        metadata = {
+            "mime_type": None,
+            "width": None,
+            "height": None,
+            "bytes_size": None
+        }
+        
+        # Try to extract from outputs first
+        for node_id, node_output in outputs.items():
+            if not isinstance(node_output, dict):
+                continue
+            for key in preferred_output_keys:
+                assets = node_output.get(key)
+                if assets and isinstance(assets, list) and len(assets) > 0:
+                    asset = assets[0]
+                    if isinstance(asset, dict):
+                        # Infer mime type from filename extension
+                        filename = asset.get("filename", "")
+                        if filename.endswith((".png", ".PNG")):
+                            metadata["mime_type"] = "image/png"
+                        elif filename.endswith((".jpg", ".jpeg", ".JPG", ".JPEG")):
+                            metadata["mime_type"] = "image/jpeg"
+                        elif filename.endswith((".webp", ".WEBP")):
+                            metadata["mime_type"] = "image/webp"
+                        elif filename.endswith((".mp3", ".MP3")):
+                            metadata["mime_type"] = "audio/mpeg"
+                        elif filename.endswith((".mp4", ".MP4")):
+                            metadata["mime_type"] = "video/mp4"
+                        elif filename.endswith((".gif", ".GIF")):
+                            metadata["mime_type"] = "image/gif"
+                        break
+        
+        # Try to fetch headers to get size (non-blocking, best effort)
+        try:
+            response = requests.head(asset_url, timeout=5)
+            if response.status_code == 200:
+                content_length = response.headers.get("Content-Length")
+                if content_length:
+                    metadata["bytes_size"] = int(content_length)
+                content_type = response.headers.get("Content-Type")
+                if content_type and not metadata["mime_type"]:
+                    metadata["mime_type"] = content_type.split(";")[0].strip()
+        except Exception as e:
+            logger.debug(f"Could not fetch asset metadata: {e}")
+        
+        return metadata
 
     def _queue_workflow(self, workflow: Dict[str, Any]):
         logger.info("Submitting workflow to ComfyUI...")

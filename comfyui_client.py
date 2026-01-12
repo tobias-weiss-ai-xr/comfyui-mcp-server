@@ -7,13 +7,6 @@ from typing import Any, Dict, Sequence
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ComfyUIClient")
 
-DEFAULT_MAPPING = {
-    "prompt": ("6", "text"),
-    "width": ("5", "width"),
-    "height": ("5", "height"),
-    "model": ("4", "ckpt_name")
-}
-
 class ComfyUIClient:
     def __init__(self, base_url):
         self.base_url = base_url
@@ -55,55 +48,6 @@ class ComfyUIClient:
             logger.warning(f"Error fetching models: {e}")
             return []
 
-    def generate_image(self, prompt, width, height, workflow_id="basic_api_test", model=None):
-        try:
-            # Prevent path traversal attacks by validating workflow_id
-            from pathlib import Path
-            workflows_dir = Path("workflows").resolve()
-            workflow_path = (workflows_dir / f"{workflow_id}.json").resolve()
-            # Ensure the resolved path is within workflows_dir
-            try:
-                workflow_path.relative_to(workflows_dir)
-            except ValueError:
-                raise ValueError(f"Invalid workflow_id: {workflow_id} (path traversal detected)")
-            
-            if not workflow_path.exists():
-                raise FileNotFoundError(f"Workflow file '{workflow_path}' not found")
-            
-            with open(workflow_path, "r", encoding="utf-8") as f:
-                workflow = json.load(f)
-
-            params = {"prompt": prompt, "width": width, "height": height}
-            if model:
-                # Validate or correct model name
-                if model.endswith("'"):  # Strip accidental quote
-                    model = model.rstrip("'")
-                    logger.info(f"Corrected model name: {model}")
-                if self.available_models and model not in self.available_models:
-                    raise Exception(f"Model '{model}' not in available models: {self.available_models}")
-                params["model"] = model
-
-            for param_key, value in params.items():
-                if param_key in DEFAULT_MAPPING:
-                    node_id, input_key = DEFAULT_MAPPING[param_key]
-                    if node_id not in workflow:
-                        raise Exception(f"Node {node_id} not found in workflow {workflow_id}")
-                    workflow[node_id]["inputs"][input_key] = value
-
-            result = self.run_custom_workflow(
-                workflow,
-                preferred_output_keys=("images", "image", "gifs", "gif")
-            )
-            logger.info(f"Generated image URL: {result['asset_url']}")
-            return result["asset_url"]
-
-        except FileNotFoundError:
-            raise Exception(f"Workflow file '{workflow_file}' not found")
-        except KeyError as e:
-            raise Exception(f"Workflow error - invalid node or input: {e}")
-        except requests.RequestException as e:
-            raise Exception(f"ComfyUI API error: {e}")
-
     def run_custom_workflow(self, workflow: Dict[str, Any], preferred_output_keys: Sequence[str] | None = None, max_attempts: int = 30):
         if preferred_output_keys is None:
             preferred_output_keys = ("images", "image", "gifs", "gif", "audio", "audios", "files")
@@ -135,7 +79,9 @@ class ComfyUIClient:
     def _wait_for_prompt(self, prompt_id: str, max_attempts: int = 30):
         for attempt in range(max_attempts):
             try:
+                # Try both the specific prompt_id endpoint and the full history endpoint
                 response = requests.get(f"{self.base_url}/history/{prompt_id}", timeout=10)
+                # If that doesn't work, we can also try: f"{self.base_url}/history"
                 if response.status_code != 200:
                     logger.warning("History endpoint returned %s on attempt %s", response.status_code, attempt + 1)
                     time.sleep(1)
@@ -148,17 +94,81 @@ class ComfyUIClient:
                     continue
                 
                 if prompt_id not in history:
+                    # Workflow might still be running, wait and retry
+                    if attempt < max_attempts - 1:
+                        time.sleep(1)
+                        continue
+                    else:
+                        # Last attempt - check if there's any history at all
+                        logger.warning("Prompt ID not found in history. Available IDs: %s", list(history.keys())[:10])
+                        time.sleep(1)
+                        continue
+                
+                prompt_data = history[prompt_id]
+                if not isinstance(prompt_data, dict):
+                    logger.warning("Prompt data is not a dict on attempt %s", attempt + 1)
                     time.sleep(1)
                     continue
                 
-                prompt_data = history[prompt_id]
-                if not isinstance(prompt_data, dict) or "outputs" not in prompt_data:
-                    logger.warning("Prompt data missing outputs on attempt %s", attempt + 1)
+                # Check for workflow errors
+                if "error" in prompt_data:
+                    error_info = prompt_data["error"]
+                    raise Exception(f"Workflow failed with error: {json.dumps(error_info, indent=2)}")
+                
+                # Check if workflow status indicates failure
+                status = prompt_data.get("status", {})
+                if isinstance(status, dict) and status.get("completed") == False:
+                    error_msg = status.get("messages", ["Workflow failed"])
+                    raise Exception(f"Workflow failed: {error_msg}")
+                
+                # Get outputs
+                if "outputs" not in prompt_data:
+                    # Check status to see if workflow completed
+                    status = prompt_data.get("status", [])
+                    if isinstance(status, list) and len(status) > 0:
+                        last_status = status[-1]
+                        if isinstance(last_status, list) and len(last_status) > 0:
+                            status_type = last_status[0]
+                            if status_type == "execution_success":
+                                # Workflow completed successfully but outputs not yet available
+                                # Wait a bit longer for outputs to be written, especially for cached executions
+                                logger.info("Workflow execution succeeded, waiting for outputs to be available...")
+                                time.sleep(3)  # Give ComfyUI time to write outputs (longer for cached)
+                                # Try fetching full history to see if outputs appear there
+                                try:
+                                    full_history_response = requests.get(f"{self.base_url}/history", timeout=10)
+                                    if full_history_response.status_code == 200:
+                                        full_history = full_history_response.json()
+                                        if prompt_id in full_history:
+                                            full_prompt_data = full_history[prompt_id]
+                                            if "outputs" in full_prompt_data and full_prompt_data["outputs"]:
+                                                logger.info("Found outputs in full history endpoint")
+                                                return full_prompt_data["outputs"]
+                                except Exception as e:
+                                    logger.debug("Could not fetch full history: %s", e)
+                                continue
+                    logger.warning("Prompt data missing outputs on attempt %s. Full data: %s", attempt + 1, json.dumps(prompt_data, indent=2))
                     time.sleep(1)
                     continue
                 
                 outputs = prompt_data["outputs"]
-                logger.info("Workflow outputs: %s", json.dumps(outputs, indent=2))
+                if not outputs or not isinstance(outputs, dict):
+                    # Check if workflow actually succeeded
+                    status = prompt_data.get("status", [])
+                    if isinstance(status, list):
+                        status_messages = [s[0] if isinstance(s, list) else str(s) for s in status]
+                        if "execution_success" in status_messages:
+                            # Workflow succeeded but no outputs - might need to check queue or wait longer
+                            logger.warning("Workflow succeeded but outputs empty. Status: %s. Waiting longer...", status_messages)
+                            time.sleep(2)
+                            continue
+                        raise Exception(f"Workflow completed but produced no outputs. Status: {status_messages}")
+                    logger.warning("Outputs is empty or not a dict. Prompt data: %s", json.dumps(prompt_data, indent=2))
+                    raise Exception("Workflow completed but produced no outputs. Check ComfyUI logs for errors.")
+                
+                logger.info("Workflow completed. Output nodes: %s", list(outputs.keys()))
+                logger.debug("Full workflow outputs: %s", json.dumps(outputs, indent=2))
+                logger.debug("Full prompt data: %s", json.dumps(prompt_data, indent=2))
                 return outputs
             except requests.RequestException as e:
                 logger.warning("Request error on attempt %s: %s", attempt + 1, e)
@@ -172,19 +182,33 @@ class ComfyUIClient:
         raise Exception(f"Workflow {prompt_id} didn't complete within {max_attempts} seconds")
 
     def _extract_first_asset_url(self, outputs: Dict[str, Any], preferred_output_keys: Sequence[str]):
-        for node_output in outputs.values():
+        # Log available outputs for debugging
+        logger.debug("Available output keys in workflow: %s", list(outputs.keys()))
+        for node_id, node_output in outputs.items():
             if not isinstance(node_output, dict):
+                logger.debug("Node %s output is not a dict: %s", node_id, type(node_output))
                 continue
+            logger.debug("Node %s has keys: %s", node_id, list(node_output.keys()))
             for key in preferred_output_keys:
                 assets = node_output.get(key)
                 if assets and isinstance(assets, list) and len(assets) > 0:
                     asset = assets[0]
                     if not isinstance(asset, dict):
+                        logger.debug("Asset in node %s, key %s is not a dict", node_id, key)
                         continue
                     filename = asset.get("filename")
                     if not filename:
+                        logger.debug("Asset in node %s, key %s missing filename", node_id, key)
                         continue
                     subfolder = asset.get("subfolder", "")
                     output_type = asset.get("type", "output")
+                    logger.info("Found asset: filename=%s, subfolder=%s, type=%s", filename, subfolder, output_type)
                     return f"{self.base_url}/view?filename={filename}&subfolder={subfolder}&type={output_type}"
-        raise Exception(f"No outputs matched preferred keys: {preferred_output_keys}")
+        
+        # Enhanced error message with actual output structure
+        logger.error("No outputs matched preferred keys: %s", preferred_output_keys)
+        logger.error("Actual outputs structure: %s", json.dumps(outputs, indent=2))
+        raise Exception(
+            f"No outputs matched preferred keys: {preferred_output_keys}. "
+            f"Available outputs: {json.dumps({k: list(v.keys()) if isinstance(v, dict) else type(v).__name__ for k, v in outputs.items()}, indent=2)}"
+        )

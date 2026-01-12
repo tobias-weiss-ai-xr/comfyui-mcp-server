@@ -26,6 +26,16 @@ PLACEHOLDER_TYPE_HINTS = {
 }
 PLACEHOLDER_DESCRIPTIONS = {
     "prompt": "Main text prompt used inside the workflow.",
+    "seed": "Random seed for image generation. If not provided, a random seed will be generated.",
+    "width": "Image width in pixels. Default: 512.",
+    "height": "Image height in pixels. Default: 512.",
+    "model": "Checkpoint model name (e.g., 'v1-5-pruned-emaonly.ckpt', 'sd_xl_base_1.0.safetensors'). Default: 'v1-5-pruned-emaonly.ckpt'.",
+    "steps": "Number of sampling steps. Higher = better quality but slower. Default: 20.",
+    "cfg": "Classifier-free guidance scale. Higher = more adherence to prompt. Default: 8.0.",
+    "sampler_name": "Sampling method (e.g., 'euler', 'dpmpp_2m', 'ddim'). Default: 'euler'.",
+    "scheduler": "Scheduler type (e.g., 'normal', 'karras', 'exponential'). Default: 'normal'.",
+    "denoise": "Denoising strength (0.0-1.0). Default: 1.0.",
+    "negative_prompt": "Negative prompt to avoid certain elements. Default: 'text, watermark'.",
     "tags": "Comma-separated descriptive tags for the audio model.",
     "lyrics": "Full lyric text that should drive the audio generation.",
 }
@@ -104,17 +114,44 @@ class WorkflowManager:
 
     def render_workflow(self, definition: WorkflowToolDefinition, provided_params: Dict[str, Any]):
         workflow = copy.deepcopy(definition.template)
+        
+        # Default values for optional parameters (matching original hardcoded values)
+        defaults = {
+            "width": 512,
+            "height": 512,
+            "steps": 20,
+            "cfg": 8.0,
+            "sampler_name": "euler",
+            "scheduler": "normal",
+            "denoise": 1.0,
+            "model": "v1-5-pruned-emaonly.ckpt",
+            "negative_prompt": "text, watermark",
+        }
+        
         for param in definition.parameters.values():
             if param.required and param.name not in provided_params:
                 raise ValueError(f"Missing required parameter '{param.name}'")
-            # Use .get() to safely access optional parameters
+            
+            # Use provided value, default, or generate (for seed)
             raw_value = provided_params.get(param.name)
             if raw_value is None:
-                # Skip optional parameters that weren't provided
-                continue
+                if param.name == "seed" and param.annotation is int:
+                    # Special handling for seed - generate random
+                    import random
+                    raw_value = random.randint(0, 2**32 - 1)
+                    logger.debug(f"Generated random seed: {raw_value}")
+                elif param.name in defaults:
+                    # Use default value
+                    raw_value = defaults[param.name]
+                    logger.debug(f"Using default value for {param.name}: {raw_value}")
+                else:
+                    # Skip parameters without defaults
+                    continue
+            
             coerced_value = self._coerce_value(raw_value, param.annotation)
             for node_id, input_name in param.bindings:
                 workflow[node_id]["inputs"][input_name] = coerced_value
+        
         return workflow
 
     def _extract_parameters(self, workflow: Dict[str, Any]):
@@ -133,11 +170,19 @@ class WorkflowManager:
                 )
                 parameter = parameters.get(param_name)
                 if not parameter:
+                    # Make seed and other optional parameters non-required
+                    # Only 'prompt' should be required for generate_image
+                    optional_params = {
+                        "seed", "width", "height", "model", "steps", "cfg",
+                        "sampler_name", "scheduler", "denoise", "negative_prompt"
+                    }
+                    is_required = param_name not in optional_params
                     parameter = WorkflowParameter(
                         name=param_name,
                         placeholder=placeholder_value,
                         annotation=annotation,
                         description=description,
+                        required=is_required,
                     )
                     parameters[param_name] = parameter
                 parameter.bindings.append((node_id, input_name))
@@ -246,9 +291,62 @@ mcp = FastMCP(
 )
 
 
+@mcp.tool()
+def list_available_models() -> dict:
+    """List all available checkpoint models in ComfyUI.
+    
+    Returns a list of model names that can be used with the generate_image tool.
+    This helps AI agents choose appropriate models for different use cases.
+    """
+    models = comfyui_client.available_models
+    return {
+        "models": models,
+        "count": len(models),
+        "default": "v1-5-pruned-emaonly.ckpt" if models else None
+    }
+
+
 def _register_workflow_tool(definition: WorkflowToolDefinition):
     def _tool_impl(*args, **kwargs):
-        bound = _tool_impl.__signature__.bind(*args, **kwargs)
+        # Coerce parameter types before signature binding
+        # MCP/JSON-RPC may pass numbers as strings, so we need to convert them
+        coerced_kwargs = {}
+        param_dict = {p.name: p for p in definition.parameters.values()}
+        
+        for key, value in kwargs.items():
+            if key in param_dict:
+                param = param_dict[key]
+                # Coerce to correct type if needed
+                if value is not None:
+                    try:
+                        # Handle string representations of numbers
+                        if param.annotation is int:
+                            if isinstance(value, str) and value.strip().isdigit():
+                                coerced_kwargs[key] = int(value)
+                            elif isinstance(value, (int, float)):
+                                coerced_kwargs[key] = int(value)
+                            else:
+                                coerced_kwargs[key] = value
+                        elif param.annotation is float:
+                            if isinstance(value, str):
+                                coerced_kwargs[key] = float(value)
+                            elif isinstance(value, (int, float)):
+                                coerced_kwargs[key] = float(value)
+                            else:
+                                coerced_kwargs[key] = value
+                        else:
+                            coerced_kwargs[key] = value
+                    except (ValueError, TypeError) as e:
+                        # If coercion fails, use original value and let validation handle it
+                        logger.warning(f"Failed to coerce {key}={value!r} to {param.annotation.__name__}: {e}")
+                        coerced_kwargs[key] = value
+                else:
+                    coerced_kwargs[key] = None
+            else:
+                # Unknown parameter, pass through
+                coerced_kwargs[key] = value
+        
+        bound = _tool_impl.__signature__.bind(*args, **coerced_kwargs)
         bound.apply_defaults()
         try:
             workflow = workflow_manager.render_workflow(definition, dict(bound.arguments))
@@ -266,16 +364,45 @@ def _register_workflow_tool(definition: WorkflowToolDefinition):
             logger.exception("Workflow '%s' failed", definition.workflow_id)
             return {"error": str(exc)}
 
-    parameters = []
+    # Separate required and optional parameters to ensure correct ordering
+    required_params = []
+    optional_params = []
     annotations: Dict[str, Any] = {}
+    
     for param in definition.parameters.values():
-        parameter = inspect.Parameter(
-            name=param.name,
-            kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            annotation=param.annotation,
-        )
-        parameters.append(parameter)
+        # For numeric types, use Any to allow string coercion from JSON-RPC
+        # FastMCP/Pydantic validation is strict, so we accept Any and validate/coerce ourselves
+        if param.annotation in (int, float):
+            # Use Any to bypass strict type checking, we'll coerce in the function
+            annotation_type = Any
+        else:
+            annotation_type = param.annotation
+        
+        if param.required:
+            parameter = inspect.Parameter(
+                name=param.name,
+                kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                annotation=annotation_type,
+            )
+            required_params.append(parameter)
+        else:
+            # Optional parameter with default value
+            # For numeric types, use Any directly (not Optional[Any]) to allow string coercion
+            if param.annotation in (int, float):
+                final_annotation = Any
+            else:
+                final_annotation = Optional[annotation_type]
+            parameter = inspect.Parameter(
+                name=param.name,
+                kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                annotation=final_annotation,
+                default=None,
+            )
+            optional_params.append(parameter)
         annotations[param.name] = param.annotation
+    
+    # Combine: required parameters first, then optional
+    parameters = required_params + optional_params
     annotations["return"] = dict
     _tool_impl.__signature__ = inspect.Signature(parameters, return_annotation=dict)
     _tool_impl.__annotations__ = annotations

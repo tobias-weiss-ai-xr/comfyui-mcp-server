@@ -161,7 +161,7 @@ def test_generate_image():
     # Call the tool with test parameters
     print(f"\n2. Testing tool '{tool_name}'...")
     arguments = {
-        "prompt": "an english mastiff dog sitting on a large boulder, bright shiny day",
+        "prompt": "an english mastiff dog, mouth closed, standing majestically atop a large boulder, bright shiny day, forest background",
         "width": 512,
         "height": 512
     }

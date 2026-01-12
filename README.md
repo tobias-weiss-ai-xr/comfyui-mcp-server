@@ -453,12 +453,16 @@ If no metadata file exists, the server automatically infers parameter mappings f
 
 ## Contributing
 
-Feel free to submit issues or PRs to enhance flexibility (e.g., dynamic node mapping, progress streaming).
+Issues and pull requests are welcome, particularly those improving workflow management, model configuration, or transport behavior.
 
-## Author
+## Contributors
 
-Joe Norton (github.com/joenorton)
+- [@venetanji](https://github.com/venetanji) — rewrite foundation and early architecture
+
+## Project Maintainer
+
+[@joenorton](https://github.com/joenorton)
 
 ## License
 
-Apache License
+Apache License 2.0

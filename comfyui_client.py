@@ -5,6 +5,8 @@ import logging
 from typing import Any, Dict, Optional, Sequence
 from urllib.parse import quote
 
+from asset_processor import get_image_metadata
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ComfyUIClient")
 
@@ -60,8 +62,8 @@ class ComfyUIClient:
         asset_info = self._extract_first_asset_info(outputs, preferred_output_keys)
         asset_url = asset_info["asset_url"]
         
-        # Extract asset metadata
-        asset_metadata = self._get_asset_metadata(asset_url, outputs, preferred_output_keys)
+        # Extract asset metadata (pass workflow to extract dimensions from it)
+        asset_metadata = self._get_asset_metadata(asset_url, outputs, preferred_output_keys, workflow)
         
         # Get full history snapshot for this prompt
         try:
@@ -83,7 +85,7 @@ class ComfyUIClient:
             "submitted_workflow": workflow
         }
     
-    def _get_asset_metadata(self, asset_url: str, outputs: Dict[str, Any], preferred_output_keys: Sequence[str]) -> Dict[str, Any]:
+    def _get_asset_metadata(self, asset_url: str, outputs: Dict[str, Any], preferred_output_keys: Sequence[str], workflow: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Extract metadata about the generated asset"""
         metadata = {
             "mime_type": None,
@@ -117,6 +119,20 @@ class ComfyUIClient:
                             metadata["mime_type"] = "image/gif"
                         break
         
+        # Extract dimensions from workflow (EmptyLatentImage node) - much more efficient than analyzing image
+        if workflow and (metadata["width"] is None or metadata["height"] is None):
+            for node_id, node_data in workflow.items():
+                if not isinstance(node_data, dict):
+                    continue
+                if node_data.get("class_type") == "EmptyLatentImage":
+                    inputs = node_data.get("inputs", {})
+                    if "width" in inputs and metadata["width"] is None:
+                        metadata["width"] = inputs["width"]
+                    if "height" in inputs and metadata["height"] is None:
+                        metadata["height"] = inputs["height"]
+                    if metadata["width"] and metadata["height"]:
+                        break
+        
         # Try to fetch headers to get size (non-blocking, best effort)
         try:
             response = requests.head(asset_url, timeout=5)
@@ -129,6 +145,25 @@ class ComfyUIClient:
                     metadata["mime_type"] = content_type.split(";")[0].strip()
         except Exception as e:
             logger.debug(f"Could not fetch asset metadata: {e}")
+        
+        # Fallback: Extract image dimensions by analyzing image bytes (only if not found in workflow)
+        # This should rarely be needed now, but kept as a fallback
+        if metadata["mime_type"] and metadata["mime_type"].startswith("image/") and (metadata["width"] is None or metadata["height"] is None):
+            try:
+                # Fetch image bytes to extract dimensions
+                img_response = requests.get(asset_url, timeout=10)
+                if img_response.status_code == 200:
+                    image_bytes = img_response.content
+                    # Update bytes_size if we got it from the full response
+                    if not metadata["bytes_size"]:
+                        metadata["bytes_size"] = len(image_bytes)
+                    # Extract dimensions
+                    img_metadata = get_image_metadata(image_bytes)
+                    if img_metadata.get("width") and img_metadata.get("height"):
+                        metadata["width"] = img_metadata["width"]
+                        metadata["height"] = img_metadata["height"]
+            except Exception as e:
+                logger.debug(f"Could not extract image dimensions: {e}")
         
         return metadata
 

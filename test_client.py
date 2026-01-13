@@ -6,6 +6,7 @@ which uses standard HTTP requests with JSON-RPC protocol.
 """
 import argparse
 import json
+import pprint
 import sys
 from typing import Any, Dict, Optional
 
@@ -90,7 +91,14 @@ def list_available_tools() -> list:
         for tool in tools:
             name = tool.get("name", "unknown")
             desc = tool.get("description", "No description")
-            print(f"  • {name}: {desc}")
+            # Extract first line/sentence for a one-liner summary
+            one_liner = desc.split('\n')[0].strip()
+            # Take first sentence if it ends with period, otherwise first 80 chars
+            if '.' in one_liner:
+                one_liner = one_liner.split('.')[0] + '.'
+            if len(one_liner) > 80:
+                one_liner = one_liner[:77] + "..."
+            print(f"  • {name}: {one_liner}")
         return tools
 
     print("Unexpected response format:")
@@ -114,6 +122,20 @@ def call_tool(tool_name: str, arguments: Dict[str, Any]) -> Optional[dict]:
 
     if "result" in result:
         result_data = result["result"]
+        
+        # Parse and replace JSON strings in text fields for cleaner display
+        if "content" in result_data and isinstance(result_data["content"], list):
+            for content_item in result_data["content"]:
+                if isinstance(content_item, dict) and "text" in content_item:
+                    text_content = content_item["text"]
+                    try:
+                        # Try to parse as JSON - if successful, replace text with parsed dict
+                        parsed = json.loads(text_content)
+                        content_item["text"] = parsed
+                    except (json.JSONDecodeError, TypeError):
+                        # If not JSON, just remove newlines for cleaner display
+                        content_item["text"] = text_content.replace("\n", "").strip()
+        
         print(f"\n✅ Response from server:")
         print(json.dumps(result_data, indent=2))
         
@@ -122,8 +144,10 @@ def call_tool(tool_name: str, arguments: Dict[str, Any]) -> Optional[dict]:
         if "content" in result_data and isinstance(result_data["content"], list) and len(result_data["content"]) > 0:
             first_content = result_data["content"][0]
             if isinstance(first_content, dict) and "text" in first_content:
+                # If we already parsed it above, use that; otherwise try parsing
+                if isinstance(first_content["text"], dict):
+                    return first_content["text"]
                 try:
-                    # Parse the JSON string from the text field
                     parsed_text = json.loads(first_content["text"])
                     return parsed_text
                 except (json.JSONDecodeError, TypeError):
@@ -150,7 +174,7 @@ def test_generate_image(prompt: Optional[str] = None):
     print_section("ComfyUI MCP Server Test Client")
 
     # List available tools
-    print("\n1)  Listing available tools...")
+    print_section("Listing available tools...")
     tools = list_available_tools()
 
     if not tools:
@@ -173,7 +197,7 @@ def test_generate_image(prompt: Optional[str] = None):
         return
 
     # Fetch server defaults
-    print(f"\n2)  Fetching server defaults...")
+    print_section("Fetching server defaults...")
     defaults_result = call_tool("get_defaults", {})
     image_defaults = {}
     if defaults_result and "image" in defaults_result:
@@ -187,7 +211,7 @@ def test_generate_image(prompt: Optional[str] = None):
         image_defaults = {"width": 512, "height": 512}
 
     # Call the tool
-    print(f"\n3)  Testing tool '{tool_name}'...")
+    print_section(f"Testing tool '{tool_name}'...")
     
     # Use provided prompt or default
     default_prompt = "an english mastiff dog, mouth closed, standing majestically in a grassy field, bright shiny day, forest background"

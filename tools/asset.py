@@ -130,11 +130,11 @@ def register_asset_tools(
                 "content": [{
                     "type": "text",
                     "text": (
-                        f"Could not inline image (exceeds budget: {e}).\n"
-                        f"Asset ID: {asset_id}\n"
-                        f"URL: {asset_record.asset_url}\n"
-                        f"Source size: {asset_record.bytes_size} bytes\n"
-                        f"Source dimensions: {asset_record.width}x{asset_record.height}\n"
+                        f"Could not inline image (exceeds budget: {e}). "
+                        f"Asset ID: {asset_id}. "
+                        f"URL: {asset_record.asset_url}. "
+                        f"Source size: {asset_record.bytes_size} bytes. "
+                        f"Source dimensions: {asset_record.width}x{asset_record.height}. "
                         f"Hint: Open URL locally or use metadata mode."
                     )
                 }]

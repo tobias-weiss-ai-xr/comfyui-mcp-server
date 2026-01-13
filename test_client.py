@@ -4,6 +4,7 @@ Test client for ComfyUI MCP Server using HTTP/JSON-RPC protocol.
 This client connects to the MCP server using the streamable-http transport,
 which uses standard HTTP requests with JSON-RPC protocol.
 """
+import argparse
 import json
 import sys
 from typing import Any, Dict, Optional
@@ -144,7 +145,7 @@ def print_section(title: str, width: int = 60):
     print("=" * width)
 
 
-def test_generate_image():
+def test_generate_image(prompt: Optional[str] = None):
     """Test the generate_image tool (if available)."""
     print_section("ComfyUI MCP Server Test Client")
 
@@ -173,8 +174,13 @@ def test_generate_image():
 
     # Call the tool
     print(f"\n2)  Testing tool '{tool_name}'...")
+    
+    # Use provided prompt or default
+    default_prompt = "an english mastiff dog, mouth closed, standing majestically in a grassy field, bright shiny day, forest background"
+    prompt_to_use = prompt if prompt is not None else default_prompt
+    
     arguments = {
-        "prompt": "an english mastiff dog, mouth closed, standing majestically in a small stream, bright shiny day, forest background",
+        "prompt": prompt_to_use,
         "width": 512,
         "height": 512,
     }
@@ -201,8 +207,27 @@ def test_generate_image():
 
 def main():
     """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Test client for ComfyUI MCP Server",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python test_client.py
+  python test_client.py -p "a beautiful sunset"
+  python test_client.py --prompt "a cat on a mat"
+        """
+    )
+    parser.add_argument(
+        "-p", "--prompt",
+        type=str,
+        default=None,
+        help="Prompt text for image generation (can be used with or without quotes)"
+    )
+    
+    args = parser.parse_args()
+    
     try:
-        test_generate_image()
+        test_generate_image(prompt=args.prompt)
     except KeyboardInterrupt:
         print("\n\n⚠️  Test interrupted by user.")
         sys.exit(1)

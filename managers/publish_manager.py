@@ -413,18 +413,21 @@ def validate_manifest_key(key: str) -> bool:
     return bool(MANIFEST_KEY_REGEX.match(key))
 
 
-def auto_generate_filename(asset_id: str) -> str:
+def auto_generate_filename(asset_id: str, format: str = "webp") -> str:
     """Auto-generate filename from asset_id.
     
     Args:
         asset_id: Asset ID (UUID)
+        format: File extension without dot (default: "webp")
     
     Returns:
-        Generated filename: asset_<shortid>.webp
+        Generated filename: asset_<shortid>.<format>
     """
     # Use first 8 chars of asset_id for shortid
     shortid = asset_id[:8] if len(asset_id) >= 8 else asset_id
-    return f"asset_{shortid}.webp"
+    # Normalize format (remove dot if present, default to webp)
+    format = format.lstrip(".") if format else "webp"
+    return f"asset_{shortid}.{format}"
 
 
 class PublishConfig:
@@ -775,7 +778,7 @@ class PublishManager:
         overwrite: bool = True,
         asset_id: Optional[str] = None,
         target_filename: Optional[str] = None,
-        format: str = "webp",
+        web_optimize: bool = False,
         max_bytes: int = 600_000
     ) -> Dict[str, Any]:
         """Copy asset from source to target with atomic write and optional compression.
@@ -786,8 +789,8 @@ class PublishManager:
             overwrite: Whether to overwrite existing file (default: True)
             asset_id: Optional asset ID for logging
             target_filename: Optional target filename for logging
-            format: Target format (default: webp)
-            max_bytes: Maximum file size in bytes (default: 600KB)
+            web_optimize: If True, convert to WebP and apply compression (default: False)
+            max_bytes: Maximum file size in bytes (default: 600KB). Only used when web_optimize=True
         
         Returns:
             Dict with published file info: dest_path, dest_url, bytes_size, mime_type, compression_info
@@ -803,23 +806,24 @@ class PublishManager:
         temp_path = target_path.with_suffix(target_path.suffix + ".tmp")
         
         try:
-            # Check if source is an image and needs compression
+            # Check if source is an image
             source_ext = source_path.suffix.lower()
-            target_ext = target_path.suffix.lower()
             is_image = source_ext in (".png", ".jpg", ".jpeg", ".webp", ".gif")
-            needs_compression = is_image and (format != "original" or target_ext != source_ext)
+            
+            # Only compress if web_optimize is enabled
+            needs_compression = is_image and web_optimize
             
             if needs_compression and PIL_AVAILABLE:
-                # Compress image
+                # Convert to WebP and compress
                 compressed_bytes, compression_info = self._compress_image(
-                    source_path, format, max_bytes
+                    source_path, "webp", max_bytes
                 )
                 
                 # Write compressed image
                 with open(temp_path, "wb") as f:
                     f.write(compressed_bytes)
             else:
-                # Simple copy (no compression)
+                # Simple copy (no compression, preserve original format)
                 shutil.copy2(source_path, temp_path)
                 compression_info = {
                     "compressed": False,

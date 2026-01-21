@@ -1,6 +1,7 @@
 """Publish tools for safely publishing ComfyUI assets to web project directories"""
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -78,49 +79,60 @@ def register_publish_tools(
         asset_id: str,
         target_filename: Optional[str] = None,
         manifest_key: Optional[str] = None,
-        format: str = "webp",
+        web_optimize: bool = False,
         max_bytes: int = 600_000,
         overwrite: bool = True
     ) -> dict:
         """Publish a ComfyUI-generated asset to a web project directory.
         
         Supports two modes:
-        - **Demo mode**: Provide `target_filename` (e.g., "hero.webp") - deterministic filename
+        - **Demo mode**: Provide `target_filename` (e.g., "hero.png") - deterministic filename
         - **Library mode**: Omit `target_filename`, provide `manifest_key` - auto-generates filename
+        
+        **Default behavior (web_optimize=False):**
+        - Assets are copied as-is, preserving original format (typically PNG from ComfyUI)
+        - No compression or format conversion
+        - Original quality preserved
+        
+        **Web optimization (web_optimize=True):**
+        - Images are converted to WebP format
+        - Compression ladder applied to meet size limits
+        - Useful for web deployment where smaller file sizes are important
         
         **Safety guarantees:**
         - Only assets from current session can be published (asset_id must exist in registry)
         - Source path must be within ComfyUI output root (validated with real path resolution)
         - Target filename validated by strict regex (prevents path traversal)
         - All paths are canonicalized to prevent symlink/traversal attacks
-        - Images automatically compressed to meet size limits (deterministic compression ladder)
         
         **Workflow:**
         1. Agent calls `generate_image` → gets `asset_id`
         2. Agent calls `list_assets(session_id=...)` to discover assets
-        3. Agent calls `publish_asset(asset_id, target_filename="hero.webp")` (demo mode)
+        3. Agent calls `publish_asset(asset_id, target_filename="hero.png")` (demo mode, no compression)
+           OR `publish_asset(asset_id, target_filename="hero.webp", web_optimize=True)` (with compression)
            OR `publish_asset(asset_id, manifest_key="hero")` (library mode)
-        4. Server validates, compresses if needed, copies, and updates manifest.json
+        4. Server validates, copies (and compresses if web_optimize=True), and updates manifest.json
         
         Args:
             asset_id: Asset ID from generation tools (session-scoped, dies on restart)
-            target_filename: Optional target filename (e.g., "hero.webp"). If omitted, auto-generated.
+            target_filename: Optional target filename (e.g., "hero.png"). If omitted, auto-generated.
                 Must match regex: ^[a-z0-9][a-z0-9._-]{0,63}\.(webp|png|jpg|jpeg)$
             manifest_key: Optional manifest key (required if target_filename omitted).
                 Must match regex: ^[a-z0-9][a-z0-9._-]{0,63}$
-            format: Target image format (default: "webp"). Ignored if target_filename has extension.
-            max_bytes: Maximum file size in bytes (default: 600000). Images are compressed if needed.
+            web_optimize: If True, convert to WebP and apply compression (default: False).
+                Only used for images. When False, assets are copied as-is preserving original format.
+            max_bytes: Maximum file size in bytes (default: 600000). Only used when web_optimize=True.
             overwrite: Whether to overwrite existing file (default: True)
         
         Returns:
             Dict with published file info:
-            - dest_url: Relative URL (e.g., "/gen/hero.webp")
+            - dest_url: Relative URL (e.g., "/gen/hero.png")
             - dest_path: Absolute path to published file
             - bytes_size: File size in bytes
-            - mime_type: MIME type (e.g., "image/webp")
+            - mime_type: MIME type (e.g., "image/png" or "image/webp")
             - width: Image width (if available)
             - height: Image height (if available)
-            - compression_info: Compression details (if image was compressed)
+            - compression_info: Compression details (only present if web_optimize=True and compression was applied)
         
         Raises:
             Error dict with "error" and "error_code" keys if:
@@ -158,6 +170,9 @@ def register_publish_tools(
                 filename=asset_record.filename
             )
             
+            # Determine source format from asset filename
+            source_ext = Path(asset_record.filename).suffix.lower().lstrip(".")
+            
             # Determine target filename
             if target_filename:
                 # Demo mode: use provided filename
@@ -179,30 +194,24 @@ def register_publish_tools(
                         "error": f"Invalid manifest_key: '{manifest_key}'. Must match regex: ^[a-z0-9][a-z0-9._-]{{0,63}}$",
                         "error_code": "INVALID_MANIFEST_KEY"
                     }
-                # Auto-generate filename
-                final_target_filename = auto_generate_filename(asset_id)
-                # Extract format from generated filename or use provided format
-                if format and not final_target_filename.endswith(f".{format}"):
-                    final_target_filename = final_target_filename.rsplit(".", 1)[0] + f".{format}"
+                # Auto-generate filename based on web_optimize and source format
+                if web_optimize:
+                    final_target_filename = auto_generate_filename(asset_id, format="webp")
+                else:
+                    # Use source format for auto-generated filename
+                    final_target_filename = auto_generate_filename(asset_id, format=source_ext if source_ext else "png")
             
             # Resolve target path
             target_path = publish_manager.resolve_target_path(final_target_filename)
             
-            # Determine format from target filename extension
-            target_ext = target_path.suffix.lower().lstrip(".")
-            if target_ext in ("webp", "png", "jpg", "jpeg"):
-                actual_format = target_ext
-            else:
-                actual_format = format
-            
-            # Copy asset with compression if needed
+            # Copy asset with optional compression
             publish_info = publish_manager.copy_asset(
                 source_path=source_path,
                 target_path=target_path,
                 overwrite=overwrite,
                 asset_id=asset_id,
                 target_filename=final_target_filename,
-                format=actual_format,
+                web_optimize=web_optimize,
                 max_bytes=max_bytes
             )
             

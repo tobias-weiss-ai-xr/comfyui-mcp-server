@@ -478,9 +478,41 @@ class TestPublishManager:
         # File should still have original content
         assert target_path.read_text() == "existing"
     
+    def test_copy_asset_no_compression_default(self, tmp_path):
+        """Test copy_asset preserves original format by default (no compression)"""
+        output_root = tmp_path / "comfyui" / "output"
+        output_root.mkdir(parents=True)
+        source_file = output_root / "test.png"
+        source_file.write_bytes(b"fake png content")
+        original_size = source_file.stat().st_size
+        
+        config = PublishConfig(
+            project_root=tmp_path,
+            publish_root=tmp_path / "publish",
+            comfyui_output_root=output_root
+        )
+        manager = PublishManager(config)
+        
+        source_path = manager.resolve_source_path("", "test.png")
+        target_path = manager.resolve_target_path("test.png")
+        
+        # Copy without compression (default behavior)
+        result = manager.copy_asset(
+            source_path, 
+            target_path, 
+            overwrite=True
+        )
+        
+        assert target_path.exists()
+        assert target_path.suffix == ".png"  # Preserves original format
+        assert target_path.read_bytes() == b"fake png content"  # Exact copy
+        assert "compression_info" in result
+        assert result["compression_info"]["compressed"] is False
+        assert result["bytes_size"] == original_size
+    
     @pytest.mark.skipif(not pytest.importorskip("PIL", reason="Pillow not available"), reason="Pillow required for compression")
     def test_copy_asset_with_compression(self, tmp_path):
-        """Test copy_asset compresses images"""
+        """Test copy_asset compresses images when web_optimize=True"""
         from PIL import Image
         
         output_root = tmp_path / "comfyui" / "output"
@@ -507,7 +539,7 @@ class TestPublishManager:
             source_path, 
             target_path, 
             overwrite=True,
-            format="webp",
+            web_optimize=True,
             max_bytes=100_000
         )
         
@@ -629,10 +661,11 @@ class TestPublishIntegration:
             target_path=target_path,
             overwrite=True,
             asset_id=asset_record.asset_id,
-            target_filename="hero.webp"
+            target_filename="hero.webp",
+            web_optimize=False  # Default: no compression
         )
         
-        # Verify file was copied
+        # Verify file was copied (preserves original format/content)
         assert target_path.exists()
         assert target_path.read_text() == "test image content"
     
@@ -667,7 +700,8 @@ class TestPublishIntegration:
             subfolder=asset_record.subfolder,
             filename=asset_record.filename
         )
-        auto_filename = auto_generate_filename(asset_record.asset_id)
+        # Auto-generate filename with source format (PNG)
+        auto_filename = auto_generate_filename(asset_record.asset_id, format="png")
         target_path = manager.resolve_target_path(auto_filename)
         
         publish_info = manager.copy_asset(
@@ -675,7 +709,8 @@ class TestPublishIntegration:
             target_path=target_path,
             overwrite=True,
             asset_id=asset_record.asset_id,
-            target_filename=auto_filename
+            target_filename=auto_filename,
+            web_optimize=False  # Default: no compression
         )
         
         # Update manifest

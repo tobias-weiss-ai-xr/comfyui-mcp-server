@@ -464,14 +464,15 @@ Uses deep copy of stored workflow, applies overrides via `_update_workflow_param
 
 ## Publish System
 
-The publish system enables AI agents to safely copy ComfyUI-generated assets into web project directories with deterministic filenames, automatic compression, and manifest management.
+The publish system enables AI agents to safely copy ComfyUI-generated assets into web project directories with deterministic filenames, optional WebP compression, and manifest management.
 
 ### Purpose
 
 Bridge the gap between ComfyUI's output directory and web project asset directories:
 - Copy generated assets to project's web directory (e.g., `public/gen/`)
 - Enforce provenance (only assets from current session)
-- Provide deterministic compression to meet size limits
+- Preserve original format by default (typically PNG from ComfyUI)
+- Optional WebP compression when `web_optimize=True` (deterministic compression ladder)
 - Support two modes: explicit filenames (demo) and manifest-based (library)
 - Auto-detect configuration with conservative fallbacks
 
@@ -526,7 +527,7 @@ Bridge the gap between ComfyUI's output directory and web project asset director
 2. **Asset Lookup**: Retrieve asset from `AssetRegistry` by `asset_id` (session-scoped)
 3. **Source Resolution**: `resolve_source_path()` validates source is within ComfyUI output root
 4. **Target Resolution**: `resolve_target_path()` validates target filename and resolves path
-5. **Compression** (if needed): Deterministic compression ladder to meet `max_bytes` limit
+5. **Compression** (if `web_optimize=True`): Deterministic compression ladder to meet `max_bytes` limit, otherwise copy as-is
 6. **Atomic Copy**: Write to temporary file, then atomic rename
 7. **Manifest Update** (if `manifest_key` provided): Atomic read/modify/write with lock
 
@@ -651,14 +652,18 @@ def is_within(child_path: Path, parent_path: Path, child_must_exist: bool = True
 - Clear error messages with tried paths
 - User can override with `set_comfyui_output_root()` tool
 
-#### Deterministic Compression Ladder
+#### Optional WebP Compression
 
-**Problem**: Need predictable compression to meet size limits without heuristics.
+**Problem**: Need optional compression for web optimization while preserving original quality by default.
 
-**Solution**: Fixed sequence of compression attempts:
+**Solution**: Compression is opt-in via `web_optimize` parameter:
+- **Default (`web_optimize=False`)**: Assets copied as-is, preserving original format (typically PNG)
+- **Web optimization (`web_optimize=True`)**: Convert to WebP and apply deterministic compression ladder
+
+**Deterministic Compression Ladder** (when `web_optimize=True`):
 1. **Quality progression**: [85, 75, 65, 55, 45, 35]
 2. **Downscale factors**: [1.0, 0.9, 0.75, 0.6, 0.5] (if needed)
-3. **Format conversion**: PNG/JPEG → WebP (if `format="webp"`)
+3. **Format conversion**: PNG/JPEG → WebP
 
 **Algorithm:**
 ```python
@@ -680,10 +685,12 @@ for downscale_factor in [1.0, 0.9, 0.75, 0.6, 0.5]:
 - `downscaled`: Whether downscaling was applied
 
 **Benefits:**
-- Reproducible results (same input → same output)
+- Default preserves original quality (no compression unless requested)
+- Reproducible results when compression is enabled (same input → same output)
 - Clear failure modes (can't compress below limit)
 - Detailed feedback for debugging
 - Predictable behavior for agents
+- Users can choose between quality preservation and file size optimization
 
 #### Atomic Manifest Updates
 
@@ -808,7 +815,8 @@ is_within(source_path, comfyui_output_root)  # Validates containment
 
 #### Compression Performance
 
-- **Deterministic Ladder**: Fixed sequence means predictable performance
+- **Default**: No compression overhead when `web_optimize=False` (simple file copy)
+- **Deterministic Ladder**: Fixed sequence means predictable performance when enabled
 - **Early Exit**: Stops at first successful compression attempt
 - **Quality vs. Size**: Tries quality first (faster), then downscaling (slower)
 - **Format Conversion**: WebP encoding is CPU-intensive but provides best compression

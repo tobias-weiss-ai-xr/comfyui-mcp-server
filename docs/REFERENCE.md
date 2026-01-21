@@ -973,7 +973,7 @@ set_comfyui_output_root(path: str) -> dict
 
 ### publish_asset
 
-Publish a ComfyUI-generated asset to the project's web directory with automatic compression.
+Publish a ComfyUI-generated asset to the project's web directory with optional WebP compression.
 
 **Signature:**
 ```python
@@ -981,7 +981,7 @@ publish_asset(
     asset_id: str,
     target_filename: str | None = None,
     manifest_key: str | None = None,
-    format: str = "webp",
+    web_optimize: bool = False,
     max_bytes: int = 600_000,
     overwrite: bool = True
 ) -> dict
@@ -991,24 +991,38 @@ publish_asset(
 - `asset_id` (str): Asset ID from generation tools (session-scoped, dies on server restart)
 
 **Optional Parameters:**
-- `target_filename` (str, optional): Target filename (e.g., `"hero.webp"`). If omitted, auto-generated (library mode). Must match regex: `^[a-z0-9][a-z0-9._-]{0,63}\.(webp|png|jpg|jpeg)$`
+- `target_filename` (str, optional): Target filename (e.g., `"hero.png"`). If omitted, auto-generated (library mode). Must match regex: `^[a-z0-9][a-z0-9._-]{0,63}\.(webp|png|jpg|jpeg)$`
 - `manifest_key` (str, optional): Manifest key (required if `target_filename` omitted). Must match regex: `^[a-z0-9][a-z0-9._-]{0,63}$`
-- `format` (str): Target image format (default: `"webp"`). Ignored if `target_filename` has extension.
-- `max_bytes` (int): Maximum file size in bytes (default: `600000`). Images are compressed if needed.
+- `web_optimize` (bool): If `True`, convert to WebP and apply compression (default: `False`). When `False`, assets are copied as-is preserving original format.
+- `max_bytes` (int): Maximum file size in bytes (default: `600000`). Only used when `web_optimize=True`.
 - `overwrite` (bool): Whether to overwrite existing file (default: `True`)
+
+**Default Behavior (`web_optimize=False`):**
+- Assets are copied as-is, preserving original format (typically PNG from ComfyUI)
+- No compression or format conversion
+- Original quality preserved
+
+**Web Optimization (`web_optimize=True`):**
+- Images are converted to WebP format
+- Compression ladder applied to meet size limits
+- Useful for web deployment where smaller file sizes are important
 
 **Two Modes:**
 
 **Demo Mode** (explicit filename):
-- User provides `target_filename` (e.g., `"hero.webp"`)
-- Agent calls: `publish_asset(asset_id="...", target_filename="hero.webp")`
+- User provides `target_filename` (e.g., `"hero.png"`)
+- Agent calls: `publish_asset(asset_id="...", target_filename="hero.png")` (no compression)
+  OR `publish_asset(asset_id="...", target_filename="hero.webp", web_optimize=True)` (with compression)
 - Manifest not updated unless `manifest_key` also provided
 
 **Library Mode** (auto-generated with manifest):
 - User provides `manifest_key`, omits `target_filename`
-- Agent calls: `publish_asset(asset_id="...", manifest_key="hero-image")`
-- Filename auto-generated as `asset_<shortid>.webp`
-- Manifest automatically updated: `{"hero-image": "asset_0b3eacbc.webp"}`
+- Agent calls: `publish_asset(asset_id="...", manifest_key="hero-image")` (no compression, preserves source format)
+  OR `publish_asset(asset_id="...", manifest_key="hero-image", web_optimize=True)` (WebP compression)
+- Filename auto-generated based on `web_optimize`:
+  - If `web_optimize=False`: `asset_<shortid>.png` (matches source format)
+  - If `web_optimize=True`: `asset_<shortid>.webp`
+- Manifest automatically updated: `{"hero-image": "asset_0b3eacbc.png"}` or `{"hero-image": "asset_0b3eacbc.webp"}`
 
 **Returns (Success):**
 ```json
@@ -1051,16 +1065,18 @@ publish_asset(
 - `PUBLISH_FAILED`: Copy/compression operation failed
 - `VALIDATION_ERROR`: General validation error
 
-**Compression Details:**
+**Compression Details (when `web_optimize=True`):**
 
 Images are compressed using a deterministic compression ladder:
 
 1. **Quality progression**: [85, 75, 65, 55, 45, 35]
 2. **Downscale factors**: [1.0, 0.9, 0.75, 0.6, 0.5] (if needed)
-3. **Format conversion**: PNG/JPEG → WebP (if `format="webp"`)
+3. **Format conversion**: PNG/JPEG → WebP
 4. **Size limit**: Enforced via `max_bytes` (default: 600KB)
 
 The compression ladder tries quality levels first, then downscaling if needed, until the size limit is met. If compression cannot meet the limit, an error is returned.
+
+**Note**: Compression only occurs when `web_optimize=True`. By default (`web_optimize=False`), assets are copied as-is with no compression or format conversion.
 
 **Manifest Updates:**
 
@@ -1079,11 +1095,20 @@ Manifest uses simple `key → filename` mapping (no arrays in v1). Updates are a
 
 **Demo Mode:**
 
-**User:** "Generate a sunset image and publish it as hero.webp, keep it under 500KB"
+**User:** "Generate a sunset image and publish it as hero.png"
 
 **Agent:**
 - *Calls `generate_image(prompt="a sunset")` → gets asset_id*
-- *Calls `publish_asset(asset_id="...", target_filename="hero.webp", format="webp", max_bytes=500_000)` → publishes with compression*
+- *Calls `publish_asset(asset_id="...", target_filename="hero.png")` → copies as-is, no compression*
+- *Reports: "Published to /gen/hero.png (original size)"*
+
+---
+
+**User:** "Generate a sunset image and publish it as hero.webp, optimize it for web and keep it under 500KB"
+
+**Agent:**
+- *Calls `generate_image(prompt="a sunset")` → gets asset_id*
+- *Calls `publish_asset(asset_id="...", target_filename="hero.webp", web_optimize=True, max_bytes=500_000)` → converts to WebP and compresses*
 - *Reports: "Published to /gen/hero.webp (37478 bytes)"*
 
 ---
@@ -1094,7 +1119,16 @@ Manifest uses simple `key → filename` mapping (no arrays in v1). Updates are a
 
 **Agent:**
 - *Calls `generate_image(prompt="a sunset")` → gets asset_id*
-- *Calls `publish_asset(asset_id="...", manifest_key="hero-image", format="webp")` → auto-generates filename, updates manifest*
+- *Calls `publish_asset(asset_id="...", manifest_key="hero-image")` → auto-generates filename with source format, updates manifest*
+- *Reports: "Published to /gen/asset_0b3eacbc.png, added to manifest as 'hero-image'*
+
+---
+
+**User:** "Generate a sunset image, optimize it for web, and add it to the manifest as 'hero-image'"
+
+**Agent:**
+- *Calls `generate_image(prompt="a sunset")` → gets asset_id*
+- *Calls `publish_asset(asset_id="...", manifest_key="hero-image", web_optimize=True)` → auto-generates WebP filename, compresses, updates manifest*
 - *Reports: "Published to /gen/asset_0b3eacbc.webp, added to manifest as 'hero-image'*
 
 **Typical Workflow:**
@@ -1374,6 +1408,6 @@ All publish errors include both human-readable messages and machine-readable err
 - **Session-scoped assets**: `asset_id`s are valid only for the current server session; restart invalidates them
 - **Filename validation**: Target filenames must match regex `^[a-z0-9][a-z0-9._-]{0,63}\.(webp|png|jpg|jpeg)$`
 - **Manifest key validation**: Manifest keys must match regex `^[a-z0-9][a-z0-9._-]{0,63}$`
-- **Compression limits**: Images compressed to meet `max_bytes` limit (default: 600KB); fails with error if limit cannot be met
+- **Compression limits**: When `web_optimize=True`, images compressed to meet `max_bytes` limit (default: 600KB); fails with error if limit cannot be met. By default (`web_optimize=False`), no compression is applied.
 - **Path safety**: All paths canonicalized; source must be within ComfyUI output root; target must be within publish root
 - **Project root detection**: Server should be started from repository root (cwd) for best results

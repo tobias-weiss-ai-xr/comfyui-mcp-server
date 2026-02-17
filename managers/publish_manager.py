@@ -7,7 +7,7 @@ import platform
 import re
 import shutil
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -957,7 +957,7 @@ class PublishManager:
         log_path = self.config.publish_root / "publish_log.jsonl"
         
         log_entry = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "asset_id": asset_id,
             "target_filename": target_filename,
             "source_path": source_path,

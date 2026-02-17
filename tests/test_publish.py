@@ -601,14 +601,21 @@ class TestPublishManager:
         assert error_code is None
     
     def test_ensure_ready_missing_comfyui_root(self, tmp_path):
-        """Test ensure_ready fails when ComfyUI root missing"""
-        config = PublishConfig(
-            project_root=tmp_path,
-            publish_root=tmp_path / "publish",
-            comfyui_output_root=None
-        )
+        """Test ensure_ready fails when ComfyUI root missing (no root after detection)."""
+        # When comfyui_output_root=None, PublishConfig auto-detects. Mock detection
+        # to return no path so we actually test the "missing root" path regardless
+        # of host (e.g. E:\comfyui-desktop\output existing on this machine).
+        tried_paths = [
+            {"path": str(tmp_path / "comfyui-desktop" / "output"), "exists": False, "is_valid": False, "source": "auto_detection"},
+        ]
+        with patch("managers.publish_manager.detect_comfyui_output_root", return_value=(None, tried_paths)):
+            config = PublishConfig(
+                project_root=tmp_path,
+                publish_root=tmp_path / "publish",
+                comfyui_output_root=None
+            )
         manager = PublishManager(config)
-        
+
         is_ready, error_code, error_info = manager.ensure_ready()
         assert is_ready is False
         assert error_code == "COMFYUI_OUTPUT_ROOT_NOT_FOUND"

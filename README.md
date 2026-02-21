@@ -245,6 +245,35 @@ Use `PARAM_*` placeholders in workflow JSON to expose parameters:
 
 The tool name is derived from the filename (e.g., `my_workflow.json` → `my_workflow` tool).
 
+### Using Custom Workflows via MCP API
+
+To execute a custom workflow (e.g., `zai_small.json`) via the MCP API:
+
+```bash
+curl -X POST http://127.0.0.1:9000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "run_workflow",
+      "arguments": {
+        "workflow_id": "zai_small",
+        "overrides": {
+          "prompt": "your description here"
+        }
+      }
+    }
+  }'
+```
+
+**Important notes:**
+- Both `Content-Type: application/json` and `Accept: application/json, text/event-stream` headers are required
+- The response comes in Server-Sent Events (SSE) format
+- Extract `asset_id` from the response for subsequent operations like `view_image` or `regenerate`
+
 ---
 
 ## Configuration

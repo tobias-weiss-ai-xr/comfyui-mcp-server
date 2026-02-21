@@ -10,18 +10,14 @@ logger = logging.getLogger("MCP_Server")
 
 
 def register_workflow_tools(
-    mcp: FastMCP,
-    workflow_manager,
-    comfyui_client,
-    defaults_manager,
-    asset_registry
+    mcp: FastMCP, workflow_manager, comfyui_client, defaults_manager, asset_registry
 ):
     """Register workflow tools with the MCP server"""
-    
+
     @mcp.tool()
     def list_workflows() -> dict:
         """List all available workflows in the workflow directory.
-        
+
         Returns a catalog of workflows with their IDs, names, descriptions,
         available inputs, and optional metadata.
         """
@@ -29,7 +25,7 @@ def register_workflow_tools(
         return {
             "workflows": catalog,
             "count": len(catalog),
-            "workflow_dir": str(workflow_manager.workflows_dir)
+            "workflow_dir": str(workflow_manager.workflows_dir),
         }
 
     @mcp.tool()
@@ -37,36 +33,33 @@ def register_workflow_tools(
         workflow_id: str,
         overrides: Optional[Dict[str, Any]] = None,
         options: Optional[Dict[str, Any]] = None,
-        return_inline_preview: bool = False
+        return_inline_preview: bool = False,
     ) -> dict:
         """Run a saved ComfyUI workflow with constrained parameter overrides.
-        
+
         Args:
             workflow_id: The workflow ID (filename stem, e.g., "generate_image")
             overrides: Optional dict of parameter overrides (e.g., {"prompt": "a cat", "width": 1024})
             options: Optional dict of execution options (reserved for future use)
             return_inline_preview: If True, include a small thumbnail base64 in response (256px, ~100KB)
-        
+
         Returns:
             Result with asset_url, workflow_id, and execution metadata. If return_inline_preview=True,
             also includes inline_preview_base64 for immediate viewing.
         """
         if overrides is None:
             overrides = {}
-        
+
         # Load workflow
         workflow = workflow_manager.load_workflow(workflow_id)
         if not workflow:
             return {"error": f"Workflow '{workflow_id}' not found"}
-        
+
         try:
             # Apply overrides with constraints
             workflow = workflow_manager.apply_workflow_overrides(
                 workflow, workflow_id, overrides, defaults_manager
             )
-
-            # Extract and remove override report before submitting to ComfyUI
-            override_report = workflow.pop("__override_report__", None)
 
             # Determine output preferences
             output_preferences = workflow_manager._guess_output_preferences(workflow)
@@ -78,21 +71,25 @@ def register_workflow_tools(
             )
 
             # Register asset and build response
-            response = register_and_build_response(
+            return register_and_build_response(
                 result,
                 workflow_id,
                 asset_registry,
                 tool_name=None,
                 return_inline_preview=return_inline_preview,
-                session_id=None
+                session_id=None,  # Session tracking can be added via request context in the future
             )
-
-            # Include override report so the agent can see what was applied/dropped
-            if override_report and override_report.get("overrides_dropped"):
-                response["overrides_applied"] = override_report["overrides_applied"]
-                response["overrides_dropped"] = override_report["overrides_dropped"]
-
-            return response
         except Exception as exc:
             logger.exception("Workflow '%s' failed", workflow_id)
-            return {"error": str(exc)}
+            error_msg = str(exc)
+            # Check if the error is already a JSON string to avoid double-encoding
+            try:
+                import json
+
+                # Try to parse the error message as JSON
+                json.loads(error_msg)
+                # If it parses, it's likely already JSON, return as-is
+                return {"error": error_msg}
+            except (json.JSONDecodeError, ValueError):
+                # Not JSON, return as plain string (will be auto-escaped by JSON-RPC)
+                return {"error": error_msg}

@@ -1,8 +1,48 @@
 # Python cache files
 __pycache__/
-*.pyc
-archive/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE and editor files
+.cursor/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Cache directories
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# Sisyphus agent files
+.sisyphus/
 
 # Logs
 *.log
 server.log
+
+# Archive and temp files
+archive/
+tmp/
+temp/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Environment files
+.env
+.env.local
+.env.*.local
